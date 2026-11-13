@@ -13,6 +13,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import royalelearn.learner as learner_mod
+from royalelearn import config as cfg
 
 #: Identity fields that may differ on a deliberate warm-start: the decks changed
 #: (env spec), who it plays (ladder), how battles are batched (rollout), and the
@@ -23,6 +24,33 @@ _DRIFT_FIELDS = frozenset({
     "engine_build", "torch_version", "device_kind",
     "royalelearn_version", "royalegym_version", "royalelearn_git", "royalegym_git",
 })
+
+
+@contextmanager
+def hard_foes_ladder():
+    """Make the "self" ladder's scripted share target the playstyles that beat
+    the bot (defend, patient, push) instead of the default noop+random mix.
+    The pool and mirror shares are unchanged; PFSP still weights opponents that
+    currently beat the learner."""
+    saved = learner_mod._ladder
+
+    def _ladder(opponent: str) -> cfg.LadderConfig:
+        if opponent == "self":
+            return cfg.LadderConfig(
+                mix=(0.35, 0.25, 0.40),
+                scripted_opponents=(
+                    "scripted:defend", "scripted:patient",
+                    "scripted:push", "scripted:random_legal",
+                ),
+                candidate_every_env_steps=1_000_000,
+            )
+        return saved(opponent)
+
+    learner_mod._ladder = _ladder
+    try:
+        yield
+    finally:
+        learner_mod._ladder = saved
 
 
 @contextmanager

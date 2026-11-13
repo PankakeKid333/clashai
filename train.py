@@ -15,6 +15,7 @@ the same command again to carry on.
 """
 
 import argparse
+import contextlib
 import pathlib
 import signal
 import threading
@@ -23,21 +24,22 @@ import time
 from royalelearn import Learner
 
 from envs import build_env
-from warmstart import _allow_env_drift, copy_latest_checkpoint
+from warmstart import _allow_env_drift, copy_latest_checkpoint, hard_foes_ladder
 
 CUSTOM_DECK = "hog26"
+DEFENSE = 0.5
 
 
 def build_env_hog26():
-    return build_env("hog26")
+    return build_env("hog26", defense=DEFENSE)
 
 
 def build_env_random():
-    return build_env("random")
+    return build_env("random", defense=DEFENSE)
 
 
 def build_env_custom():
-    return build_env(CUSTOM_DECK.split(","))
+    return build_env(CUSTOM_DECK.split(","), defense=DEFENSE)
 
 
 def build_learner(args, save_dir, opponent, timestep_limit):
@@ -64,6 +66,9 @@ def build_learner(args, save_dir, opponent, timestep_limit):
     )
 
 
+_nullcontext = contextlib.nullcontext
+
+
 def run_until(learner, seconds):
     if seconds <= 0:
         return
@@ -88,14 +93,20 @@ def main():
     p.add_argument("--n-envs", type=int, default=5)
     p.add_argument("--device", default="cpu",
                    help="'auto' uses your GPU if torch can see it, else the CPU")
+    p.add_argument("--defense", type=float, default=0.5,
+                   help="weight of the tower-damage-taken penalty; 0 disables, 1-2 defends harder")
+    p.add_argument("--ladder", choices=["defense", "default"], default="defense",
+                   help="'defense' aims the scripted share at the playstyles that beat the bot")
     p.add_argument("--trunk-channels", type=int, default=32)
     p.add_argument("--trunk-blocks", type=int, default=2)
     p.add_argument("--checkpoint-every", type=int, default=100_000)
     p.add_argument("--seed", type=int, default=0)
     args = p.parse_args()
 
-    global CUSTOM_DECK
+    global CUSTOM_DECK, DEFENSE
     CUSTOM_DECK = args.deck
+    DEFENSE = args.defense
+    ladder_ctx = hard_foes_ladder if args.ladder == "defense" else _nullcontext
 
     deck_tag = args.deck if args.deck in ("hog26", "random") else "custom"
     base = pathlib.Path(args.save_dir or f"runs/{deck_tag}")
@@ -109,20 +120,20 @@ def main():
     if args.opponent == "auto":
         print(f"stage 1: vs the random bot, until {args.promote_at} decisions or "
               f"{args.minutes / 2:.0f} minutes -> {stage1_dir}")
-        with _allow_env_drift():
+        with _allow_env_drift(), ladder_ctx():
             learner = build_learner(args, stage1_dir, "random", args.promote_at)
             run_until(learner, deadline - time.time())
 
         print(f"stage 2: the ladder -- vs itself, its older versions and scripted bots "
               f"-> {stage2_dir}")
-        with _allow_env_drift():
+        with _allow_env_drift(), ladder_ctx():
             learner = build_learner(args, stage2_dir, "self", 1_000_000_000)
             copy_latest_checkpoint(stage1_dir, stage2_dir)
             run_until(learner, deadline - time.time())
             learner.save(str(stage2_dir / "bot"))
     else:
         print(f"training vs {args.opponent} -> {stage1_dir}")
-        with _allow_env_drift():
+        with _allow_env_drift(), ladder_ctx():
             learner = build_learner(args, stage1_dir, args.opponent, 1_000_000_000)
             run_until(learner, deadline - time.time())
             learner.save(str(stage1_dir / "bot"))

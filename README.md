@@ -4,8 +4,10 @@ A Clash Royale bot trained with reinforcement learning on
 [RoyaleGym](https://royalegym.github.io/RoyaleGym/) — a deterministic, integer-only
 reimplementation of the game (Rust engine, Python bindings). No GPU needed: the
 battles run on the CPU at ~1,300 sim steps/s per core, and the PPO network is
-small enough to train on a laptop. If you do have a CUDA card, pass
-`device="auto"` in `train.py` and torch will use it.
+small enough to train on a laptop. With a CUDA card, add `--device auto` to
+`train.py` (and install the CUDA build of torch) — then raise `--n-envs` to 16
+or more so the card stays busy, and `--trunk-channels 64 --trunk-blocks 4` or
+bigger for a stronger network.
 
 ## Setup
 
