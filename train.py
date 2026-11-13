@@ -28,18 +28,19 @@ from warmstart import _allow_env_drift, copy_latest_checkpoint, hard_foes_ladder
 
 CUSTOM_DECK = "hog26"
 DEFENSE = 0.5
+ADAPTIVE = False
 
 
 def build_env_hog26():
-    return build_env("hog26", defense=DEFENSE)
+    return build_env("hog26", defense=DEFENSE, adaptive=ADAPTIVE)
 
 
 def build_env_random():
-    return build_env("random", defense=DEFENSE)
+    return build_env("random", defense=DEFENSE, adaptive=ADAPTIVE)
 
 
 def build_env_custom():
-    return build_env(CUSTOM_DECK.split(","), defense=DEFENSE)
+    return build_env(CUSTOM_DECK.split(","), defense=DEFENSE, adaptive=ADAPTIVE)
 
 
 def build_learner(args, save_dir, opponent, timestep_limit):
@@ -94,7 +95,9 @@ def main():
     p.add_argument("--device", default="cpu",
                    help="'auto' uses your GPU if torch can see it, else the CPU")
     p.add_argument("--defense", type=float, default=0.5,
-                   help="weight of the tower-damage-taken penalty; 0 disables, 1-2 defends harder")
+                   help="starting weight of the tower-damage-taken penalty; 0 disables, 1-2 defends harder")
+    p.add_argument("--adaptive-defense", action="store_true",
+                   help="let the defense weight tune itself: up while the bot takes more tower damage than it deals, down while it defends fine")
     p.add_argument("--ladder", choices=["defense", "default"], default="defense",
                    help="'defense' aims the scripted share at the playstyles that beat the bot")
     p.add_argument("--trunk-channels", type=int, default=32)
@@ -103,9 +106,10 @@ def main():
     p.add_argument("--seed", type=int, default=0)
     args = p.parse_args()
 
-    global CUSTOM_DECK, DEFENSE
+    global CUSTOM_DECK, DEFENSE, ADAPTIVE
     CUSTOM_DECK = args.deck
     DEFENSE = args.defense
+    ADAPTIVE = args.adaptive_defense
     ladder_ctx = hard_foes_ladder if args.ladder == "defense" else _nullcontext
 
     deck_tag = args.deck if args.deck in ("hog26", "random") else "custom"
