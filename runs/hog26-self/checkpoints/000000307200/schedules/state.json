@@ -1,0 +1,1 @@
+{"format_version":1,"backoff":{"lr_actor":0.0003,"lr_critic":0.0003,"consecutive_breaches":0,"events":0},"last":{"iteration":119,"cumulative_env_steps":304640,"cumulative_timesteps":487424,"gamma":0.9970497844771181,"gae_lambda":0.99,"ent_coef":0.01,"ent_coef_noop":0.01939072,"lr_actor":0.0003,"lr_critic":0.0003,"lr_backoff_events":0,"actor_lr_scale":1.0}}

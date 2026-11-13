@@ -1,0 +1,1 @@
+{"snapshots":[{"snapshot_id":"scripted:noop","step":0,"payload":null,"elo":1200.0,"games":0,"meta":{}},{"snapshot_id":"scripted:random_legal","step":0,"payload":null,"elo":1200.0,"games":0,"meta":{}}],"records":{},"k_factor":32.0,"initial_elo":1200.0}

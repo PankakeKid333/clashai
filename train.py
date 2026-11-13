@@ -1,0 +1,130 @@
+"""Train a Clash Royale bot, Hog 2.6 first, then any deck.
+
+    python train.py --minutes 60                    # Hog 2.6, auto curriculum
+    python train.py --deck random --minutes 60      # every deck, from scratch
+    python train.py --deck random --warm-start runs/hog26/stage2-self
+
+The curriculum ("auto"): first it plays a bot that moves randomly, which
+teaches the basics fast. Once it has beaten that --promote-at decisions'
+worth, it is promoted to the ladder: about half its battles against the
+current version of itself, a third against older saved versions, and the
+rest against the gym's scripted bots (defend, push, patient). That is two
+bots that get better competing against each other, which is where skill
+comes from. Checkpoints save on Ctrl+C and on the --minutes deadline; run
+the same command again to carry on.
+"""
+
+import argparse
+import pathlib
+import signal
+import threading
+import time
+
+from royalelearn import Learner
+
+from envs import build_env
+from warmstart import _allow_env_drift, copy_latest_checkpoint
+
+CUSTOM_DECK = "hog26"
+
+
+def build_env_hog26():
+    return build_env("hog26")
+
+
+def build_env_random():
+    return build_env("random")
+
+
+def build_env_custom():
+    return build_env(CUSTOM_DECK.split(","))
+
+
+def build_learner(args, save_dir, opponent, timestep_limit):
+    fn = {"hog26": build_env_hog26, "random": build_env_random}.get(args.deck, build_env_custom)
+    return Learner(
+        fn,
+        n_envs=args.n_envs,
+        device="cpu",
+        opponent=opponent,
+        trunk_channels=args.trunk_channels,
+        trunk_blocks=args.trunk_blocks,
+        steps_per_update=4096,
+        ppo_batch_size=4096,
+        ppo_minibatch_size=1024,
+        ppo_epochs=1,
+        policy_lr=3e-4,
+        critic_lr=3e-4,
+        ppo_ent_coef=0.01,
+        checkpoint_every=args.checkpoint_every,
+        timestep_limit=timestep_limit,
+        save_dir=str(save_dir),
+        resume=True,
+        seed=args.seed,
+    )
+
+
+def run_until(learner, seconds):
+    if seconds <= 0:
+        return
+
+    def stop_when_time_is_up():
+        time.sleep(seconds)
+        signal.raise_signal(signal.SIGINT)
+
+    threading.Thread(target=stop_when_time_is_up, daemon=True).start()
+    learner.learn()
+
+
+def main():
+    p = argparse.ArgumentParser()
+    p.add_argument("--deck", default="hog26", help="'hog26', 'random', or 8 comma-separated names")
+    p.add_argument("--opponent", choices=["auto", "random", "self", "noop"], default="auto")
+    p.add_argument("--warm-start", default=None, help="run dir whose weights to begin from")
+    p.add_argument("--save-dir", default=None, help="default: runs/<deck>")
+    p.add_argument("--minutes", type=float, default=60.0)
+    p.add_argument("--promote-at", type=int, default=150_000,
+                   help="decisions against the random bot before the ladder takes over")
+    p.add_argument("--n-envs", type=int, default=5)
+    p.add_argument("--trunk-channels", type=int, default=32)
+    p.add_argument("--trunk-blocks", type=int, default=2)
+    p.add_argument("--checkpoint-every", type=int, default=100_000)
+    p.add_argument("--seed", type=int, default=0)
+    args = p.parse_args()
+
+    global CUSTOM_DECK
+    CUSTOM_DECK = args.deck
+
+    deck_tag = args.deck if args.deck in ("hog26", "random") else "custom"
+    base = pathlib.Path(args.save_dir or f"runs/{deck_tag}")
+    stage1_dir = base / "stage1-random" if args.opponent == "auto" else base
+    stage2_dir = base / "stage2-self" if args.opponent == "auto" else base
+    deadline = time.time() + args.minutes * 60
+
+    if args.warm_start:
+        copy_latest_checkpoint(args.warm_start, stage1_dir)
+
+    if args.opponent == "auto":
+        print(f"stage 1: vs the random bot, until {args.promote_at} decisions or "
+              f"{args.minutes / 2:.0f} minutes -> {stage1_dir}")
+        with _allow_env_drift():
+            learner = build_learner(args, stage1_dir, "random", args.promote_at)
+            run_until(learner, deadline - time.time())
+
+        print(f"stage 2: the ladder -- vs itself, its older versions and scripted bots "
+              f"-> {stage2_dir}")
+        with _allow_env_drift():
+            learner = build_learner(args, stage2_dir, "self", 1_000_000_000)
+            copy_latest_checkpoint(stage1_dir, stage2_dir)
+            run_until(learner, deadline - time.time())
+            learner.save(str(stage2_dir / "bot"))
+    else:
+        print(f"training vs {args.opponent} -> {stage1_dir}")
+        with _allow_env_drift():
+            learner = build_learner(args, stage1_dir, args.opponent, 1_000_000_000)
+            run_until(learner, deadline - time.time())
+            learner.save(str(stage1_dir / "bot"))
+
+
+if __name__ == "__main__":
+    main()
