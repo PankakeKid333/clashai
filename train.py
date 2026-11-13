@@ -45,7 +45,7 @@ def build_learner(args, save_dir, opponent, timestep_limit):
     return Learner(
         fn,
         n_envs=args.n_envs,
-        device="cpu",
+        device=args.device,
         opponent=opponent,
         trunk_channels=args.trunk_channels,
         trunk_blocks=args.trunk_blocks,
@@ -86,6 +86,8 @@ def main():
     p.add_argument("--promote-at", type=int, default=150_000,
                    help="decisions against the random bot before the ladder takes over")
     p.add_argument("--n-envs", type=int, default=5)
+    p.add_argument("--device", default="cpu",
+                   help="'auto' uses your GPU if torch can see it, else the CPU")
     p.add_argument("--trunk-channels", type=int, default=32)
     p.add_argument("--trunk-blocks", type=int, default=2)
     p.add_argument("--checkpoint-every", type=int, default=100_000)
