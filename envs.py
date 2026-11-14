@@ -10,8 +10,8 @@ from royalegym import (
     CombinedReward,
     CrownReward,
     DefaultStateMutator,
-    ElixirLeakPenalty,
     ElixirTradeReward,
+    EntityKind,
     GameOverCondition,
     RewardFunction,
     RustEngine,
@@ -86,6 +86,45 @@ class AdaptiveDefensePenalty(RewardFunction):
         return {"name": "AdaptiveDefensePenalty", "weight": round(self.weight, 3)}
 
 
+class PatientLeakPenalty(RewardFunction):
+    """Sitting at full elixir is only penalized while the enemy has units on
+    the board.
+
+    The stock ElixirLeakPenalty fires unconditionally, which taxes three
+    tactics good players use on purpose: waiting at 10 to force the first
+    move, banking elixir after a won defense to build a counter-push, and
+    holding so a 4-cost win condition becomes castable. It priced holding at
+    ten as worse than losing a tower, and the policy responded by spending
+    every drop the moment it arrived. This version fires only when the enemy
+    has troops or buildings alive and this seat is floating -- that is when
+    leaked regeneration actually concedes board presence. A mutual standoff
+    at 10 costs nothing, so forcing the other player to move first is free.
+    """
+
+    UNIT_KINDS = (EntityKind.TROOP, EntityKind.BUILDING)
+
+    def __init__(self, weight=0.01, max_milli=10_000):
+        self.weight = float(weight)
+        self.max_milli = int(max_milli)
+
+    def get_reward(self, team, prev, state, results):
+        if self.weight <= 0 or prev is None:
+            return 0.0
+        full = self.max_milli
+        mine = (prev.players[team].elixir_milli >= full
+                and state.players[team].elixir_milli >= full)
+        if not mine:
+            return 0.0
+        foe = 1 - team
+        pressure = any(e.kind in self.UNIT_KINDS
+                       for e in state.entities if e.team == foe)
+        return -self.weight if pressure else 0.0
+
+    def config(self):
+        return {"name": "PatientLeakPenalty", "weight": self.weight,
+                "max_milli": self.max_milli}
+
+
 class DeployCardBonus(RewardFunction):
     """A small plus every time this seat deploys a named card.
 
@@ -123,7 +162,7 @@ class DeployCardBonus(RewardFunction):
                 "weight": self.weight}
 
 
-def make_reward(defense=0.5, adaptive=False, wincond=None):
+def make_reward(defense=0.5, adaptive=False, wincond=None, leak=0.01):
     """Win is what counts. Crowns, tower damage, elixir trades and (with
     weight ``defense``) tower damage taken are hints that speed learning.
     With ``adaptive`` the defense weight tunes itself while training."""
@@ -132,7 +171,7 @@ def make_reward(defense=0.5, adaptive=False, wincond=None):
         (CrownReward(), 0.2),
         (TowerHPReward(), 0.1),
         (ElixirTradeReward(), 0.2),
-        (ElixirLeakPenalty(), 0.01),
+        (PatientLeakPenalty(weight=leak), 1.0),
     ]
     if defense:
         if adaptive:
@@ -144,7 +183,8 @@ def make_reward(defense=0.5, adaptive=False, wincond=None):
     return CombinedReward(terms)
 
 
-def _env(state_mutator, decision_ms, defense, adaptive=False, wincond=None):
+def _env(state_mutator, decision_ms, defense, adaptive=False, wincond=None,
+         leak=0.01):
     engine = RustEngine()
     if wincond is not None and not wincond.resolve(engine):
         wincond = None
@@ -153,7 +193,7 @@ def _env(state_mutator, decision_ms, defense, adaptive=False, wincond=None):
         state_mutator=state_mutator,
         obs_builder=SpatialObsBuilder(),
         action_parser=TileActionParser(),
-        reward_fn=make_reward(defense, adaptive, wincond),
+        reward_fn=make_reward(defense, adaptive, wincond, leak),
         termination_cond=GameOverCondition(),
         truncation_cond=None,
         decision_ms=decision_ms,
@@ -161,7 +201,7 @@ def _env(state_mutator, decision_ms, defense, adaptive=False, wincond=None):
 
 
 def build_env(deck="hog26", decision_ms=500, defense=0.5, adaptive=False,
-              wincond_card="HogRider", wincond_weight=0.15):
+              wincond_card="HogRider", wincond_weight=0.15, leak=0.01):
     """deck: 'hog26' (mirror), 'random' (eight random cards a battle), or a
     list of eight card names for a mirror of that deck.
 
@@ -178,8 +218,9 @@ def build_env(deck="hog26", decision_ms=500, defense=0.5, adaptive=False,
                if wincond_card and wincond_weight else None)
     if deck == "hog26":
         return _env(DefaultStateMutator(decks=[HOG_26, HOG_26]), decision_ms,
-                    defense, adaptive, wincond)
+                    defense, adaptive, wincond, leak)
     if deck == "random":
-        return _env(DefaultStateMutator(), decision_ms, defense, adaptive, wincond)
+        return _env(DefaultStateMutator(), decision_ms, defense, adaptive,
+                    wincond, leak)
     return _env(DefaultStateMutator(decks=[deck, deck]), decision_ms,
-                defense, adaptive, wincond)
+                defense, adaptive, wincond, leak)

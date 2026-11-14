@@ -31,21 +31,25 @@ DEFENSE = 0.5
 ADAPTIVE = False
 WINCOND_CARD = "HogRider"
 WINCOND_WEIGHT = 0.15
+LEAK = 0.01
 
 
 def build_env_hog26():
     return build_env("hog26", defense=DEFENSE, adaptive=ADAPTIVE,
-                     wincond_card=WINCOND_CARD, wincond_weight=WINCOND_WEIGHT)
+                     wincond_card=WINCOND_CARD, wincond_weight=WINCOND_WEIGHT,
+                     leak=LEAK)
 
 
 def build_env_random():
     return build_env("random", defense=DEFENSE, adaptive=ADAPTIVE,
-                     wincond_card=WINCOND_CARD, wincond_weight=WINCOND_WEIGHT)
+                     wincond_card=WINCOND_CARD, wincond_weight=WINCOND_WEIGHT,
+                     leak=LEAK)
 
 
 def build_env_custom():
     return build_env(CUSTOM_DECK.split(","), defense=DEFENSE, adaptive=ADAPTIVE,
-                     wincond_card=WINCOND_CARD, wincond_weight=WINCOND_WEIGHT)
+                     wincond_card=WINCOND_CARD, wincond_weight=WINCOND_WEIGHT,
+                     leak=LEAK)
 
 
 def build_learner(args, save_dir, opponent, timestep_limit):
@@ -107,6 +111,8 @@ def main():
                    help="card that earns a deploy bonus; the fix for a bot that cycles cheap cards and never plays its win condition")
     p.add_argument("--wincond-bonus", type=float, default=0.15,
                    help="reward per deploy of --wincond-card; 0 disables", )
+    p.add_argument("--leak-weight", type=float, default=0.01,
+                   help="per-step penalty for sitting at 10 elixir while the enemy has units on the board; holding at 10 against an empty board is free")
     p.add_argument("--ladder", choices=["defense", "default"], default="defense",
                    help="'defense' aims the scripted share at the playstyles that beat the bot")
     p.add_argument("--trunk-channels", type=int, default=32)
@@ -115,12 +121,13 @@ def main():
     p.add_argument("--seed", type=int, default=0)
     args = p.parse_args()
 
-    global CUSTOM_DECK, DEFENSE, ADAPTIVE, WINCOND_CARD, WINCOND_WEIGHT
+    global CUSTOM_DECK, DEFENSE, ADAPTIVE, WINCOND_CARD, WINCOND_WEIGHT, LEAK
     CUSTOM_DECK = args.deck
     DEFENSE = args.defense
     ADAPTIVE = args.adaptive_defense
     WINCOND_CARD = args.wincond_card
     WINCOND_WEIGHT = args.wincond_bonus
+    LEAK = args.leak_weight
     ladder_ctx = hard_foes_ladder if args.ladder == "defense" else _nullcontext
 
     deck_tag = args.deck if args.deck in ("hog26", "random") else "custom"
