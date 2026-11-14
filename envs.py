@@ -86,7 +86,44 @@ class AdaptiveDefensePenalty(RewardFunction):
         return {"name": "AdaptiveDefensePenalty", "weight": round(self.weight, 3)}
 
 
-def make_reward(defense=0.5, adaptive=False):
+class DeployCardBonus(RewardFunction):
+    """A small plus every time this seat deploys a named card.
+
+    PPO found a cheap-cycle local optimum: spend elixir the moment it reaches
+    1-3 and a 4-cost win condition never becomes castable, so the Hog never
+    gets played and the bot cannot win. This pays it for deploying the card
+    anyway, which gives the gradient a way out: play the Hog, see what it
+    earns, and keep doing it when it works.
+    """
+
+    def __init__(self, card="HogRider", weight=0.15):
+        self.card = card
+        self.weight = float(weight)
+        self.card_id = None
+
+    def resolve(self, engine):
+        cards = engine.cards() if callable(engine.cards) else engine.cards
+        for c in cards:
+            if c.name == self.card:
+                self.card_id = c.card_id
+                return True
+        return False
+
+    def get_reward(self, team, prev, state, results):
+        if self.card_id is None or prev is None:
+            return 0.0
+        prev_uids = {e.uid for e in prev.entities}
+        n = sum(1 for e in state.entities
+                if e.team == team and e.card_id == self.card_id
+                and e.uid not in prev_uids)
+        return self.weight * n
+
+    def config(self):
+        return {"name": "DeployCardBonus", "card": self.card,
+                "weight": self.weight}
+
+
+def make_reward(defense=0.5, adaptive=False, wincond=None):
     """Win is what counts. Crowns, tower damage, elixir trades and (with
     weight ``defense``) tower damage taken are hints that speed learning.
     With ``adaptive`` the defense weight tunes itself while training."""
@@ -102,32 +139,47 @@ def make_reward(defense=0.5, adaptive=False):
             terms.append((AdaptiveDefensePenalty(weight=defense), 1.0))
         else:
             terms.append((TowerDamageTakenPenalty(), float(defense)))
+    if wincond:
+        terms.append((wincond, 1.0))
     return CombinedReward(terms)
 
 
-def _env(state_mutator, decision_ms, defense, adaptive=False):
+def _env(state_mutator, decision_ms, defense, adaptive=False, wincond=None):
+    engine = RustEngine()
+    if wincond is not None and not wincond.resolve(engine):
+        wincond = None
     return ClashParallelEnv(
-        RustEngine(),
+        engine,
         state_mutator=state_mutator,
         obs_builder=SpatialObsBuilder(),
         action_parser=TileActionParser(),
-        reward_fn=make_reward(defense, adaptive),
+        reward_fn=make_reward(defense, adaptive, wincond),
         termination_cond=GameOverCondition(),
         truncation_cond=None,
         decision_ms=decision_ms,
     )
 
 
-def build_env(deck="hog26", decision_ms=500, defense=0.5, adaptive=False):
+def build_env(deck="hog26", decision_ms=500, defense=0.5, adaptive=False,
+              wincond_card="HogRider", wincond_weight=0.15):
     """deck: 'hog26' (mirror), 'random' (eight random cards a battle), or a
     list of eight card names for a mirror of that deck.
 
     defense: weight of the tower-damage-taken penalty. 0 turns it off; raise
     it (1.0, 2.0) for a bot that defends sooner in its training. With
     adaptive=True that weight moves by itself: up while the bot takes more
-    tower damage than it deals, down while it defends fine."""
+    tower damage than it deals, down while it defends fine.
+
+    wincond: a small bonus (wincond_weight) each time the bot deploys
+    wincond_card. Without it PPO can settle into spamming cheap cards and
+    never saving the elixir to play its win condition at all. A card that is
+    not in the deck disables the term, so random decks are unaffected."""
+    wincond = (DeployCardBonus(wincond_card, wincond_weight)
+               if wincond_card and wincond_weight else None)
     if deck == "hog26":
-        return _env(DefaultStateMutator(decks=[HOG_26, HOG_26]), decision_ms, defense, adaptive)
+        return _env(DefaultStateMutator(decks=[HOG_26, HOG_26]), decision_ms,
+                    defense, adaptive, wincond)
     if deck == "random":
-        return _env(DefaultStateMutator(), decision_ms, defense, adaptive)
-    return _env(DefaultStateMutator(decks=[deck, deck]), decision_ms, defense, adaptive)
+        return _env(DefaultStateMutator(), decision_ms, defense, adaptive, wincond)
+    return _env(DefaultStateMutator(decks=[deck, deck]), decision_ms,
+                defense, adaptive, wincond)
