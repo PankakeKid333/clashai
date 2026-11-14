@@ -33,25 +33,28 @@ ADAPTIVE = False
 WINCOND_CARD = "HogRider"
 WINCOND_WEIGHT = 0.15
 LEAK = 0.01
+ELIXIR_ADV = 0.0
 
 
 def build_env_hog26():
     return build_env("hog26", decision_ms=DECISION_MS, defense=DEFENSE,
                      adaptive=ADAPTIVE, wincond_card=WINCOND_CARD,
-                     wincond_weight=WINCOND_WEIGHT, leak=LEAK)
+                     wincond_weight=WINCOND_WEIGHT, leak=LEAK,
+                     elixir_adv=ELIXIR_ADV)
 
 
 def build_env_random():
     return build_env("random", decision_ms=DECISION_MS, defense=DEFENSE,
                      adaptive=ADAPTIVE, wincond_card=WINCOND_CARD,
-                     wincond_weight=WINCOND_WEIGHT, leak=LEAK)
+                     wincond_weight=WINCOND_WEIGHT, leak=LEAK,
+                     elixir_adv=ELIXIR_ADV)
 
 
 def build_env_custom():
     return build_env(CUSTOM_DECK.split(","), decision_ms=DECISION_MS,
                      defense=DEFENSE, adaptive=ADAPTIVE,
                      wincond_card=WINCOND_CARD, wincond_weight=WINCOND_WEIGHT,
-                     leak=LEAK)
+                     leak=LEAK, elixir_adv=ELIXIR_ADV)
 
 
 def build_learner(args, save_dir, opponent, timestep_limit):
@@ -115,6 +118,8 @@ def main():
                    help="reward per deploy of --wincond-card; 0 disables", )
     p.add_argument("--leak-weight", type=float, default=0.01,
                    help="per-step penalty for sitting at 10 elixir while the enemy has units on the board; holding at 10 against an empty board is free")
+    p.add_argument("--elixir-advantage", type=float, default=0.0,
+                   help="per-decision reward for holding more elixir than the enemy; pays for winning trades and banking counter-pushes, keep it tiny (0.0005)")
     p.add_argument("--ppo-epochs", type=int, default=2,
                    help="PPO passes over each batch of experience; 2 learns more per decision, 1 updates faster on a CPU-only machine")
     p.add_argument("--lr", type=float, default=3e-4)
@@ -131,7 +136,7 @@ def main():
     args = p.parse_args()
 
     global CUSTOM_DECK, DEFENSE, ADAPTIVE, WINCOND_CARD, WINCOND_WEIGHT, LEAK
-    global DECISION_MS
+    global DECISION_MS, ELIXIR_ADV
     CUSTOM_DECK = args.deck
     DEFENSE = args.defense
     ADAPTIVE = args.adaptive_defense
@@ -139,6 +144,7 @@ def main():
     WINCOND_WEIGHT = args.wincond_bonus
     LEAK = args.leak_weight
     DECISION_MS = args.decision_ms
+    ELIXIR_ADV = args.elixir_advantage
     ladder_ctx = hard_foes_ladder if args.ladder == "defense" else _nullcontext
 
     deck_tag = args.deck if args.deck in ("hog26", "random") else "custom"
@@ -157,6 +163,9 @@ def main():
             learner = build_learner(args, stage1_dir, "random", args.promote_at)
             run_until(learner, deadline - time.time())
 
+        if time.time() >= deadline:
+            print("the --minutes deadline passed during stage 1; nothing to save")
+            return
         print(f"stage 2: the ladder -- vs itself, its older versions and scripted bots "
               f"-> {stage2_dir}")
         with _allow_env_drift(), ladder_ctx():
@@ -169,7 +178,8 @@ def main():
         with _allow_env_drift(), ladder_ctx():
             learner = build_learner(args, stage1_dir, args.opponent, 1_000_000_000)
             run_until(learner, deadline - time.time())
-            learner.save(str(stage1_dir / "bot"))
+            if time.time() < deadline:
+                learner.save(str(stage1_dir / "bot"))
 
 
 if __name__ == "__main__":

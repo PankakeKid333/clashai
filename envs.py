@@ -162,10 +162,39 @@ class DeployCardBonus(RewardFunction):
                 "weight": self.weight}
 
 
-def make_reward(defense=0.5, adaptive=False, wincond=None, leak=0.01):
+class ElixirAdvantageReward(RewardFunction):
+    """A small plus per decision for holding more elixir than the enemy.
+
+    Efficient play wins trades: stopping a 5-cost push with a 1-cost card
+    widens the elixir gap, and the gap is what funds a counter-push. This
+    pays for the standing gap itself, so a positive trade pays twice -- once
+    in ElixirTradeReward for the units killed, once here for the advantage
+    it left behind. Kept tiny on purpose: summed over a whole battle it can
+    rival a crown, and it must never pay for hoarding elixir instead of
+    using it -- PatientLeakPenalty guards the other side of that line."""
+
+    def __init__(self, weight=0.0005, max_milli=10_000):
+        self.weight = float(weight)
+        self.max_milli = int(max_milli)
+
+    def get_reward(self, team, prev, state, results):
+        if self.weight <= 0 or prev is None:
+            return 0.0
+        mine = state.players[team].elixir_milli
+        foe = state.players[1 - team].elixir_milli
+        return self.weight * (mine - foe) / self.max_milli
+
+    def config(self):
+        return {"name": "ElixirAdvantageReward", "weight": self.weight}
+
+
+def make_reward(defense=0.5, adaptive=False, wincond=None, leak=0.01,
+                elixir_adv=0.0):
     """Win is what counts. Crowns, tower damage, elixir trades and (with
     weight ``defense``) tower damage taken are hints that speed learning.
-    With ``adaptive`` the defense weight tunes itself while training."""
+    With ``adaptive`` the defense weight tunes itself while training. With
+    ``elixir_adv`` > 0 the bot is also paid a little for holding more
+    elixir than the enemy."""
     terms = [
         (WinLossReward(), 1.0),
         (CrownReward(), 0.2),
@@ -180,11 +209,13 @@ def make_reward(defense=0.5, adaptive=False, wincond=None, leak=0.01):
             terms.append((TowerDamageTakenPenalty(), float(defense)))
     if wincond:
         terms.append((wincond, 1.0))
+    if elixir_adv:
+        terms.append((ElixirAdvantageReward(weight=elixir_adv), 1.0))
     return CombinedReward(terms)
 
 
 def _env(state_mutator, decision_ms, defense, adaptive=False, wincond=None,
-         leak=0.01):
+         leak=0.01, elixir_adv=0.0):
     engine = RustEngine()
     if wincond is not None and not wincond.resolve(engine):
         wincond = None
@@ -193,7 +224,7 @@ def _env(state_mutator, decision_ms, defense, adaptive=False, wincond=None,
         state_mutator=state_mutator,
         obs_builder=SpatialObsBuilder(),
         action_parser=TileActionParser(),
-        reward_fn=make_reward(defense, adaptive, wincond, leak),
+        reward_fn=make_reward(defense, adaptive, wincond, leak, elixir_adv),
         termination_cond=GameOverCondition(),
         truncation_cond=None,
         decision_ms=decision_ms,
@@ -201,7 +232,8 @@ def _env(state_mutator, decision_ms, defense, adaptive=False, wincond=None,
 
 
 def build_env(deck="hog26", decision_ms=500, defense=0.5, adaptive=False,
-              wincond_card="HogRider", wincond_weight=0.15, leak=0.01):
+              wincond_card="HogRider", wincond_weight=0.15, leak=0.01,
+              elixir_adv=0.0):
     """deck: 'hog26' (mirror), 'random' (eight random cards a battle), or a
     list of eight card names for a mirror of that deck.
 
@@ -218,9 +250,9 @@ def build_env(deck="hog26", decision_ms=500, defense=0.5, adaptive=False,
                if wincond_card and wincond_weight else None)
     if deck == "hog26":
         return _env(DefaultStateMutator(decks=[HOG_26, HOG_26]), decision_ms,
-                    defense, adaptive, wincond, leak)
+                    defense, adaptive, wincond, leak, elixir_adv)
     if deck == "random":
         return _env(DefaultStateMutator(), decision_ms, defense, adaptive,
-                    wincond, leak)
+                    wincond, leak, elixir_adv)
     return _env(DefaultStateMutator(decks=[deck, deck]), decision_ms,
-                defense, adaptive, wincond, leak)
+                defense, adaptive, wincond, leak, elixir_adv)
