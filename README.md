@@ -95,6 +95,15 @@ reference did 16,384 steps per 36–71 s with 32 battles at once.
 | `benchmark.py` | Machine speed, to compare computers |
 | `visualize.py` | Renders a battle to a self-contained HTML animation |
 | `watch.py` | One battle, saved for the `royaleviser` viewer |
+| `webapp.py` | Status web app for Fly.io: run progress, metrics tails, battle links |
+| `Dockerfile`, `fly.toml` | Container and Fly.io config (listens on 8080, stops when idle) |
+
+## Web status page
+
+`webapp.py` serves a page listing every run, its latest checkpoint and metrics
+tail, plus the recorded battles. Run it with `python webapp.py` and open
+`http://localhost:8080`, or deploy it with `fly deploy` (config in `fly.toml`;
+the machine auto-stops when idle).
 
 ## Honest expectations
 
