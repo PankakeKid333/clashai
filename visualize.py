@@ -49,6 +49,49 @@ def frames_from_trace(trace, every_nth_tick=5):
     return frames
 
 
+def battle_stats(trace):
+    """Exact per-side totals read from the trace: cards played, elixir spent,
+    tower damage taken, crowns, duration."""
+    import collections
+    cards = {c.card_id: c for c in trace.header.cards}
+    plays = [collections.Counter(), collections.Counter()]
+    elixir = [0.0, 0.0]
+    for step in trace.steps:
+        for cmd, st, cid in zip(step.commands, step.statuses, step.card_ids):
+            if st != 0 or cid not in cards:
+                continue
+            t = 1 if cmd.team else 0
+            plays[t][cards[cid].name] += 1
+            elixir[t] += cards[cid].elixir
+
+    def tower_hp(frame, team):
+        return sum(e.hp for e in frame.entities
+                   if e.kind >= 2 and e.team == team)
+
+    first, last = trace.frames[0], trace.frames[-1]
+    tower_start = [tower_hp(first, t) for t in (0, 1)]
+    tower_end = [tower_hp(last, t) for t in (0, 1)]
+    crowns = [int(c) for c in last.crowns]
+    if crowns[0] > crowns[1]:
+        winner = "blue"
+    elif crowns[1] > crowns[0]:
+        winner = "red"
+    elif tower_end[1] < tower_start[1] and tower_end[0] == tower_start[0]:
+        winner = "blue"
+    elif tower_end[0] < tower_start[0] and tower_end[1] == tower_start[1]:
+        winner = "red"
+    else:
+        winner = "draw"
+    return {
+        "plays": [{k: v for k, v in p.most_common()} for p in plays],
+        "elixir": [round(e, 1) for e in elixir],
+        "crowns": crowns,
+        "tower_left": [int(a - b) for a, b in zip(tower_start, tower_end)],
+        "duration": round(last.tick * trace.header.tick_ms / 1000, 1),
+        "winner": winner,
+    }
+
+
 def arena_from_header(h):
     return {
         "tiles_x": h.tiles_x,
@@ -83,6 +126,9 @@ HTML = """<!DOCTYPE html>
  #tl{width:100%}
  .legend{font-size:12px;color:#9fb0c0;margin-top:14px;line-height:1.5}
  .chip{display:inline-block;padding:1px 7px;border-radius:8px;margin:2px;font-size:12px}
+ .stats{font-size:13px;line-height:1.55;margin-top:14px;border-top:1px solid #2a3644;padding-top:10px}
+ .stats b{color:#fff}
+ .stats .lab{color:#9fb0c0}
  .b{background:#1d4f9c}.r{background:#9c1d31}
 </style></head><body>
 <div id="stage"><canvas id="cv" width="432" height="768"></canvas></div>
@@ -99,6 +145,7 @@ HTML = """<!DOCTYPE html>
  <input type="range" id="tl" min="0" max="100" value="0">
  <div id="clock">0:00</div>
  <div id="hands"></div>
+ <div id="stats" class="stats"></div>
  <div class="legend">Blue at the bottom is the bot. Circles are units (size =
   footprint, hollow = flying, bar = hp). Squares are towers. The purple flashes
   mark where a card was just played.</div>
@@ -189,6 +236,19 @@ document.getElementById('tl').oninput = e => {
   fi = Math.round(e.target.value/100*(D.frames.length-1)); draw();
 };
 if(D.title) document.getElementById('title').textContent = D.title;
+if(D.stats){
+  const s = D.stats, el = document.getElementById('stats');
+  const top = (p) => Object.entries(p).slice(0, 5)
+    .map(([k, v]) => `${k}\u00d7${v}`).join(', ') || 'none';
+  const win = s.winner === 'draw' ? 'Draw' : (s.winner === 'blue' ? 'Blue won' : 'Red won');
+  el.innerHTML =
+    `<div class="lab">result</div><b>${win}</b> \u00b7 ${s.crowns[0]}\u2013${s.crowns[1]}` +
+    ` \u00b7 ${Math.floor(s.duration/60)}:${String(Math.round(s.duration%60)).padStart(2,'0')}` +
+    `<div class="lab">elixir spent</div>blue <b>${s.elixir[0]}</b> \u2014 red <b>${s.elixir[1]}</b>` +
+    `<div class="lab">tower hp lost</div>blue <b>${s.tower_left[0]}</b> \u2014 red <b>${s.tower_left[1]}</b>` +
+    `<div class="lab">blue played</div>${top(s.plays[0])}` +
+    `<div class="lab">red played</div>${top(s.plays[1])}`;
+}
 draw(); requestAnimationFrame(loop);
 </script></body></html>"""
 
@@ -249,7 +309,8 @@ def main():
         if d:
             fr["d"] = d
 
-    data = {"arena": arena_from_header(trace.header), "frames": frames, "title": title}
+    data = {"arena": arena_from_header(trace.header), "frames": frames,
+         "title": title, "stats": battle_stats(trace)}
     if not frames:
         raise SystemExit(
             f"the battle recorded {len(trace.frames)} engine ticks but no drawable "

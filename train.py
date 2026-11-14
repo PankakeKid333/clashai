@@ -28,6 +28,7 @@ from warmstart import _allow_env_drift, copy_latest_checkpoint, hard_foes_ladder
 
 CUSTOM_DECK = "hog26"
 DEFENSE = 0.5
+DECISION_MS = 500
 ADAPTIVE = False
 WINCOND_CARD = "HogRider"
 WINCOND_WEIGHT = 0.15
@@ -35,19 +36,20 @@ LEAK = 0.01
 
 
 def build_env_hog26():
-    return build_env("hog26", defense=DEFENSE, adaptive=ADAPTIVE,
-                     wincond_card=WINCOND_CARD, wincond_weight=WINCOND_WEIGHT,
-                     leak=LEAK)
+    return build_env("hog26", decision_ms=DECISION_MS, defense=DEFENSE,
+                     adaptive=ADAPTIVE, wincond_card=WINCOND_CARD,
+                     wincond_weight=WINCOND_WEIGHT, leak=LEAK)
 
 
 def build_env_random():
-    return build_env("random", defense=DEFENSE, adaptive=ADAPTIVE,
-                     wincond_card=WINCOND_CARD, wincond_weight=WINCOND_WEIGHT,
-                     leak=LEAK)
+    return build_env("random", decision_ms=DECISION_MS, defense=DEFENSE,
+                     adaptive=ADAPTIVE, wincond_card=WINCOND_CARD,
+                     wincond_weight=WINCOND_WEIGHT, leak=LEAK)
 
 
 def build_env_custom():
-    return build_env(CUSTOM_DECK.split(","), defense=DEFENSE, adaptive=ADAPTIVE,
+    return build_env(CUSTOM_DECK.split(","), decision_ms=DECISION_MS,
+                     defense=DEFENSE, adaptive=ADAPTIVE,
                      wincond_card=WINCOND_CARD, wincond_weight=WINCOND_WEIGHT,
                      leak=LEAK)
 
@@ -64,10 +66,10 @@ def build_learner(args, save_dir, opponent, timestep_limit):
         steps_per_update=4096,
         ppo_batch_size=4096,
         ppo_minibatch_size=1024,
-        ppo_epochs=1,
-        policy_lr=3e-4,
-        critic_lr=3e-4,
-        ppo_ent_coef=0.01,
+        ppo_epochs=args.ppo_epochs,
+        policy_lr=args.lr,
+        critic_lr=args.lr,
+        ppo_ent_coef=args.ent_coef,
         checkpoint_every=args.checkpoint_every,
         timestep_limit=timestep_limit,
         save_dir=str(save_dir),
@@ -113,6 +115,13 @@ def main():
                    help="reward per deploy of --wincond-card; 0 disables", )
     p.add_argument("--leak-weight", type=float, default=0.01,
                    help="per-step penalty for sitting at 10 elixir while the enemy has units on the board; holding at 10 against an empty board is free")
+    p.add_argument("--ppo-epochs", type=int, default=2,
+                   help="PPO passes over each batch of experience; 2 learns more per decision, 1 updates faster on a CPU-only machine")
+    p.add_argument("--lr", type=float, default=3e-4)
+    p.add_argument("--ent-coef", type=float, default=0.01,
+                   help="entropy bonus; higher explores more, lower commits harder")
+    p.add_argument("--decision-ms", type=int, default=500,
+                   help="game-time per decision; 250 doubles decisions per battle (finer control, slower wall-clock), 1000 halves them")
     p.add_argument("--ladder", choices=["defense", "default"], default="defense",
                    help="'defense' aims the scripted share at the playstyles that beat the bot")
     p.add_argument("--trunk-channels", type=int, default=32)
@@ -122,12 +131,14 @@ def main():
     args = p.parse_args()
 
     global CUSTOM_DECK, DEFENSE, ADAPTIVE, WINCOND_CARD, WINCOND_WEIGHT, LEAK
+    global DECISION_MS
     CUSTOM_DECK = args.deck
     DEFENSE = args.defense
     ADAPTIVE = args.adaptive_defense
     WINCOND_CARD = args.wincond_card
     WINCOND_WEIGHT = args.wincond_bonus
     LEAK = args.leak_weight
+    DECISION_MS = args.decision_ms
     ladder_ctx = hard_foes_ladder if args.ladder == "defense" else _nullcontext
 
     deck_tag = args.deck if args.deck in ("hog26", "random") else "custom"
