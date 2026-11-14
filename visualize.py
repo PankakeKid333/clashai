@@ -61,6 +61,11 @@ def arena_from_header(h):
 
 HTML = """<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>Clash battle</title>
+<script>window.onerror = function(m, s, l){
+  document.body.innerHTML = '<pre style="color:#fff;background:#8b1a1a;padding:24px;font-size:14px">'
+    + 'The viewer hit an error and could not draw:\n' + m + '\n(line ' + l + ')'
+    + '</pre>';
+};</script>
 <style>
  body{background:#101418;color:#dfe6ee;font-family:system-ui,sans-serif;margin:0;
       display:flex;gap:18px;padding:18px;align-items:flex-start}
@@ -245,10 +250,16 @@ def main():
             fr["d"] = d
 
     data = {"arena": arena_from_header(trace.header), "frames": frames, "title": title}
+    if not frames:
+        raise SystemExit(
+            f"the battle recorded {len(trace.frames)} engine ticks but no drawable "
+            "frames -- try another --seed"
+        )
     html = HTML.replace("__DATA__", json.dumps(data, separators=(",", ":")))
     with open(args.out, "w") as fh:
         fh.write(html)
-    print(f"wrote {args.out}: {len(frames)} frames, {title} — open it in a browser")
+    import os
+    print(f"wrote {os.path.abspath(args.out)}: {len(frames)} frames, {title} -- open that exact file in a browser")
 
 
 if __name__ == "__main__":
