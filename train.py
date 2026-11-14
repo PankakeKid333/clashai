@@ -5,17 +5,19 @@
     python train.py --deck random --warm-start runs/hog26/stage2-self
 
 The curriculum ("auto"): first it plays a bot that moves randomly, which
-teaches the basics fast. Once it has beaten that --promote-at decisions'
-worth, it is promoted to the ladder: about half its battles against the
-current version of itself, a third against older saved versions, and the
-rest against the gym's scripted bots (defend, push, patient). That is two
-bots that get better competing against each other, which is where skill
-comes from. Checkpoints save on Ctrl+C and on the --minutes deadline; run
-the same command again to carry on.
+teaches the basics fast. It is promoted to the ladder once it actually beats
+that bot -- an 80% win rate over its last 200 battles -- with --promote-at
+decisions as the fallback cap. The ladder: about a third of its battles
+against the current version of itself, a quarter against older saved
+versions, and the rest against the gym's scripted bots (defend, push,
+patient, random-legal). That is two bots that get better competing against
+each other, which is where skill comes from. Checkpoints save on Ctrl+C and
+on the --minutes deadline; run the same command again to carry on.
 """
 
 import argparse
 import contextlib
+import json
 import pathlib
 import signal
 import threading
@@ -32,6 +34,7 @@ DECISION_MS = 500
 ADAPTIVE = False
 WINCOND_CARD = "HogRider"
 WINCOND_WEIGHT = 0.15
+WINCOND_DEPLOY = 0.05
 LEAK = 0.01
 ELIXIR_ADV = 0.0
 
@@ -39,14 +42,16 @@ ELIXIR_ADV = 0.0
 def build_env_hog26():
     return build_env("hog26", decision_ms=DECISION_MS, defense=DEFENSE,
                      adaptive=ADAPTIVE, wincond_card=WINCOND_CARD,
-                     wincond_weight=WINCOND_WEIGHT, leak=LEAK,
+                     wincond_weight=WINCOND_WEIGHT,
+                     wincond_deploy=WINCOND_DEPLOY, leak=LEAK,
                      elixir_adv=ELIXIR_ADV)
 
 
 def build_env_random():
     return build_env("random", decision_ms=DECISION_MS, defense=DEFENSE,
                      adaptive=ADAPTIVE, wincond_card=WINCOND_CARD,
-                     wincond_weight=WINCOND_WEIGHT, leak=LEAK,
+                     wincond_weight=WINCOND_WEIGHT,
+                     wincond_deploy=WINCOND_DEPLOY, leak=LEAK,
                      elixir_adv=ELIXIR_ADV)
 
 
@@ -54,7 +59,8 @@ def build_env_custom():
     return build_env(CUSTOM_DECK.split(","), decision_ms=DECISION_MS,
                      defense=DEFENSE, adaptive=ADAPTIVE,
                      wincond_card=WINCOND_CARD, wincond_weight=WINCOND_WEIGHT,
-                     leak=LEAK, elixir_adv=ELIXIR_ADV)
+                     wincond_deploy=WINCOND_DEPLOY, leak=LEAK,
+                     elixir_adv=ELIXIR_ADV)
 
 
 def build_learner(args, save_dir, opponent, timestep_limit):
@@ -84,16 +90,74 @@ def build_learner(args, save_dir, opponent, timestep_limit):
 _nullcontext = contextlib.nullcontext
 
 
-def run_until(learner, seconds):
+def recent_scores(run_dir, foe, window=200):
+    """The learner's scores in its last ladder battles against one foe.
+
+    Every training battle is appended to the run's ladder/games.jsonl with a
+    score of 1 win, 0.5 draw, 0 loss -- including stage 1's battles against
+    the random bot, which is what makes promotion by skill observable."""
+    games = pathlib.Path(run_dir) / "ladder" / "games.jsonl"
+    if not games.exists():
+        return []
+    scores = []
+    try:
+        with open(games, encoding="utf-8") as fh:
+            for line in fh:
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                if row.get("a") == "learner" and row.get("b") == foe:
+                    scores.append(float(row.get("score_a", 0.0)))
+    except OSError:
+        return []
+    return scores[-window:]
+
+
+def make_promotion_watch(run_dir, threshold, min_games, window=200, poll=20.0):
+    """A watcher that stops stage 1 early, once the bot has actually beaten
+    the random bot. Promotion by decision count alone can move a bot that
+    still loses to randomness into self-play, where two weak players happily
+    reinforce each other's mistakes; this promotes on the win rate over the
+    last ``window`` battles instead, once at least ``min_games`` of them
+    exist. The --promote-at decision cap still applies as the fallback."""
+
+    def watch(running):
+        while running.is_set():
+            time.sleep(poll)
+            scores = recent_scores(run_dir, "scripted:random_legal", window)
+            if len(scores) < min_games:
+                continue
+            rate = sum(scores) / len(scores)
+            if rate >= threshold:
+                print(f"promoting: {rate:.0%} over the last {len(scores)} "
+                      f"battles vs the random bot (target {threshold:.0%})")
+                signal.raise_signal(signal.SIGINT)
+                return
+
+    return watch
+
+
+def run_until(learner, seconds, watch=None):
     if seconds <= 0:
         return
+    running = threading.Event()
+    running.set()
 
     def stop_when_time_is_up():
         time.sleep(seconds)
-        signal.raise_signal(signal.SIGINT)
+        if running.is_set():
+            signal.raise_signal(signal.SIGINT)
 
-    threading.Thread(target=stop_when_time_is_up, daemon=True).start()
-    learner.learn()
+    threads = [threading.Thread(target=stop_when_time_is_up, daemon=True)]
+    if watch is not None:
+        threads.append(threading.Thread(target=watch, args=(running,), daemon=True))
+    for t in threads:
+        t.start()
+    try:
+        learner.learn()
+    finally:
+        running.clear()
 
 
 def main():
@@ -104,7 +168,11 @@ def main():
     p.add_argument("--save-dir", default=None, help="default: runs/<deck>")
     p.add_argument("--minutes", type=float, default=60.0)
     p.add_argument("--promote-at", type=int, default=150_000,
-                   help="decisions against the random bot before the ladder takes over")
+                   help="decision cap for stage 1; promotion now happens on skill, this is only the fallback")
+    p.add_argument("--promote-win-rate", type=float, default=0.8,
+                   help="stage 1 promotes early once the bot wins this share of its last 200 battles vs the random bot")
+    p.add_argument("--promote-games", type=int, default=100,
+                   help="battles vs the random bot required before the win-rate promotion can fire")
     p.add_argument("--n-envs", type=int, default=5)
     p.add_argument("--device", default="cpu",
                    help="'auto' uses your GPU if torch can see it, else the CPU")
@@ -115,7 +183,9 @@ def main():
     p.add_argument("--wincond-card", default="HogRider",
                    help="card that earns a deploy bonus; the fix for a bot that cycles cheap cards and never plays its win condition")
     p.add_argument("--wincond-bonus", type=float, default=0.15,
-                   help="reward per deploy of --wincond-card; 0 disables", )
+                   help="reward when the win-condition card connects (alive while an enemy tower loses hp); 0 disables", )
+    p.add_argument("--wincond-deploy-bonus", type=float, default=0.05,
+                   help="smaller reward for merely deploying the win-condition card, the nudge that gets it out of hand at all")
     p.add_argument("--leak-weight", type=float, default=0.01,
                    help="per-step penalty for sitting at 10 elixir while the enemy has units on the board; holding at 10 against an empty board is free")
     p.add_argument("--elixir-advantage", type=float, default=0.0,
@@ -136,12 +206,13 @@ def main():
     args = p.parse_args()
 
     global CUSTOM_DECK, DEFENSE, ADAPTIVE, WINCOND_CARD, WINCOND_WEIGHT, LEAK
-    global DECISION_MS, ELIXIR_ADV
+    global DECISION_MS, ELIXIR_ADV, WINCOND_DEPLOY
     CUSTOM_DECK = args.deck
     DEFENSE = args.defense
     ADAPTIVE = args.adaptive_defense
     WINCOND_CARD = args.wincond_card
     WINCOND_WEIGHT = args.wincond_bonus
+    WINCOND_DEPLOY = args.wincond_deploy_bonus
     LEAK = args.leak_weight
     DECISION_MS = args.decision_ms
     ELIXIR_ADV = args.elixir_advantage
@@ -157,11 +228,22 @@ def main():
         copy_latest_checkpoint(args.warm_start, stage1_dir)
 
     if args.opponent == "auto":
-        print(f"stage 1: vs the random bot, until {args.promote_at} decisions or "
-              f"{args.minutes / 2:.0f} minutes -> {stage1_dir}")
+        print(f"stage 1: vs the random bot, until it wins {args.promote_win_rate:.0%} "
+              f"of 200 battles (cap {args.promote_at} decisions, "
+              f"{args.minutes / 2:.0f} minutes) -> {stage1_dir}")
+        watch = make_promotion_watch(stage1_dir, args.promote_win_rate,
+                                     args.promote_games)
         with _allow_env_drift(), ladder_ctx():
             learner = build_learner(args, stage1_dir, "random", args.promote_at)
-            run_until(learner, deadline - time.time())
+            run_until(learner, deadline - time.time(), watch)
+
+        scores = recent_scores(stage1_dir, "scripted:random_legal")
+        if scores:
+            rate = sum(scores) / len(scores)
+            if rate < args.promote_win_rate:
+                print(f"note: stage 1 ended at {rate:.0%} vs the random bot "
+                      f"(target {args.promote_win_rate:.0%}); the ladder may be "
+                      f"weak until the bot catches up")
 
         if time.time() >= deadline:
             print("the --minutes deadline passed during stage 1; nothing to save")

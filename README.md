@@ -28,13 +28,16 @@ python train.py --deck random --minutes 60 --warm-start runs/hog26/stage2-self
 
 The curriculum (`--opponent auto`, the default):
 
-1. **Stage 1** — plays a bot that moves randomly until `--promote-at` decisions
-   (default 150,000). This teaches the basics fast: cycle discipline, elixir
-   trades, when a Hog push connects.
-2. **Stage 2** — the ladder: about half its battles against the current version
-   of itself, a third against older saved versions of itself, and the rest
-   against the gym's scripted bots (defend, push, patient). Two bots that keep
-   getting better, competing against each other.
+1. **Stage 1** — plays a bot that moves randomly until it has actually beaten
+   it: an 80% win rate over its last 200 battles (`--promote-win-rate`), with
+   `--promote-at` decisions (default 150,000) as the fallback cap. Promotion
+   waits for skill, not a step count, so a bot that is still random-level
+   never enters self-play against itself. This teaches the basics fast: cycle
+   discipline, elixir trades, when a Hog push connects.
+2. **Stage 2** — the ladder: about 35% of its battles against the current
+   version of itself, 25% against older saved versions of itself, and 40%
+   against the gym's scripted bots (defend, push, patient, random-legal).
+   Two bots that keep getting better, competing against each other.
 
 Checkpoints save on Ctrl+C and at the `--minutes` deadline; run the same
 command again to carry on. `runs/<deck>/stage2-self/metrics.jsonl` has one line
@@ -49,7 +52,13 @@ python evaluate.py --run runs/hog26/stage2-self --opponent all --games 60
 
 Win rate against the whole baseline ladder (noop, random, greedy, defend, push,
 patient, itself) with 95% confidence intervals. `too close to call` means not
-enough games, not a tie.
+enough games, not a tie. `greedy` and `first-affordable` never appear in
+training, so they are the held-out opponents; for a stronger one, play a bot
+from a different training lineage:
+
+```bash
+python evaluate.py --run runs/hog26-64/bot --foe-run runs/all-decks/bot
+```
 
 ## Watch it
 

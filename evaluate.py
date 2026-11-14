@@ -65,6 +65,8 @@ def main():
     p.add_argument("--deck", default="hog26", help="'hog26', 'random', or 8 comma-separated names")
     p.add_argument("--opponent", default="random",
                    choices=[*make_foes(), "self", "all"])
+    p.add_argument("--foe-run", default=None,
+                   help="play against the saved bot of another run instead of a scripted foe; a held-out opponent from a different training lineage")
     p.add_argument("--games", type=int, default=60)
     args = p.parse_args()
 
@@ -76,11 +78,14 @@ def main():
     build = lambda: build_env(deck)
 
     foes = []
+    if args.foe_run:
+        foes.append((f"bot:{pathlib.Path(args.foe_run).name}",
+                     PolicyOpponent(Learner.load_policy(args.foe_run))))
     if args.opponent in ("all", "self"):
         foes.append(("itself", PolicyOpponent(Learner.load_policy(args.run))))
     if args.opponent == "all":
         foes.extend(make_foes().values())
-    elif args.opponent != "self":
+    elif args.opponent != "self" and not args.foe_run:
         foes.append(make_foes()[args.opponent])
 
     for foe_name, foe in foes:

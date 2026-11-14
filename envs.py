@@ -126,19 +126,28 @@ class PatientLeakPenalty(RewardFunction):
 
 
 class DeployCardBonus(RewardFunction):
-    """A small plus every time this seat deploys a named card.
+    """Pays for deploying a named card, and more for connecting with it.
 
     PPO found a cheap-cycle local optimum: spend elixir the moment it reaches
     1-3 and a 4-cost win condition never becomes castable, so the Hog never
-    gets played and the bot cannot win. This pays it for deploying the card
-    anyway, which gives the gradient a way out: play the Hog, see what it
-    earns, and keep doing it when it works.
+    gets played and the bot cannot win. The deploy nudge gives the gradient a
+    way out: play the card, see what it earns, keep doing it when it works.
+    Paying only for the deploy, though, buys Hog Riders thrown one by one into
+    a defended tower, so the real bonus waits for the connection: the card
+    alive on the board during a tick in which an enemy tower loses
+    hitpoints. Spam into a Musketeer still earns the small nudge; a Hog at
+    the tower earns the rest.
     """
 
-    def __init__(self, card="HogRider", weight=0.15):
+    TOWER_KINDS = (EntityKind.KING_TOWER, EntityKind.PRINCESS_TOWER)
+
+    def __init__(self, card="HogRider", weight=0.15, deploy_weight=0.05):
         self.card = card
         self.weight = float(weight)
+        self.deploy_weight = float(deploy_weight)
         self.card_id = None
+        self._live = {}
+        self._paid = {}
 
     def resolve(self, engine):
         cards = engine.cards() if callable(engine.cards) else engine.cards
@@ -148,18 +157,35 @@ class DeployCardBonus(RewardFunction):
                 return True
         return False
 
+    def _enemy_towers_took_damage(self, team, prev, state):
+        foe = 1 - team
+        hp = lambda s: sum(e.hp for e in s.entities
+                           if e.team == foe and e.kind in self.TOWER_KINDS)
+        return hp(state) < hp(prev)
+
     def get_reward(self, team, prev, state, results):
         if self.card_id is None or prev is None:
             return 0.0
-        prev_uids = {e.uid for e in prev.entities}
-        n = sum(1 for e in state.entities
-                if e.team == team and e.card_id == self.card_id
-                and e.uid not in prev_uids)
-        return self.weight * n
+        live = self._live.setdefault(team, set())
+        paid = self._paid.setdefault(team, set())
+        reward = 0.0
+        on_board = {e.uid for e in state.entities
+                    if e.team == team and e.card_id == self.card_id}
+        fresh = on_board - {e.uid for e in prev.entities}
+        if fresh:
+            reward += self.deploy_weight * len(fresh)
+            live |= fresh
+        connecting = live - paid
+        if connecting and self._enemy_towers_took_damage(team, prev, state):
+            reward += self.weight * len(connecting)
+            paid |= connecting
+        live &= on_board
+        paid &= live
+        return reward
 
     def config(self):
         return {"name": "DeployCardBonus", "card": self.card,
-                "weight": self.weight}
+                "weight": self.weight, "deploy_weight": self.deploy_weight}
 
 
 class ElixirAdvantageReward(RewardFunction):
@@ -189,7 +215,7 @@ class ElixirAdvantageReward(RewardFunction):
 
 
 def make_reward(defense=0.5, adaptive=False, wincond=None, leak=0.01,
-                elixir_adv=0.0):
+                elixir_adv=0.0, wincond_deploy=0.05):
     """Win is what counts. Crowns, tower damage, elixir trades and (with
     weight ``defense``) tower damage taken are hints that speed learning.
     With ``adaptive`` the defense weight tunes itself while training. With
@@ -208,6 +234,7 @@ def make_reward(defense=0.5, adaptive=False, wincond=None, leak=0.01,
         else:
             terms.append((TowerDamageTakenPenalty(), float(defense)))
     if wincond:
+        wincond.deploy_weight = float(wincond_deploy)
         terms.append((wincond, 1.0))
     if elixir_adv:
         terms.append((ElixirAdvantageReward(weight=elixir_adv), 1.0))
@@ -215,7 +242,7 @@ def make_reward(defense=0.5, adaptive=False, wincond=None, leak=0.01,
 
 
 def _env(state_mutator, decision_ms, defense, adaptive=False, wincond=None,
-         leak=0.01, elixir_adv=0.0):
+         leak=0.01, elixir_adv=0.0, wincond_deploy=0.05):
     engine = RustEngine()
     if wincond is not None and not wincond.resolve(engine):
         wincond = None
@@ -224,7 +251,8 @@ def _env(state_mutator, decision_ms, defense, adaptive=False, wincond=None,
         state_mutator=state_mutator,
         obs_builder=SpatialObsBuilder(),
         action_parser=TileActionParser(),
-        reward_fn=make_reward(defense, adaptive, wincond, leak, elixir_adv),
+        reward_fn=make_reward(defense, adaptive, wincond, leak, elixir_adv,
+                              wincond_deploy),
         termination_cond=GameOverCondition(),
         truncation_cond=None,
         decision_ms=decision_ms,
@@ -233,7 +261,7 @@ def _env(state_mutator, decision_ms, defense, adaptive=False, wincond=None,
 
 def build_env(deck="hog26", decision_ms=500, defense=0.5, adaptive=False,
               wincond_card="HogRider", wincond_weight=0.15, leak=0.01,
-              elixir_adv=0.0):
+              elixir_adv=0.0, wincond_deploy=0.05):
     """deck: 'hog26' (mirror), 'random' (eight random cards a battle), or a
     list of eight card names for a mirror of that deck.
 
@@ -250,9 +278,11 @@ def build_env(deck="hog26", decision_ms=500, defense=0.5, adaptive=False,
                if wincond_card and wincond_weight else None)
     if deck == "hog26":
         return _env(DefaultStateMutator(decks=[HOG_26, HOG_26]), decision_ms,
-                    defense, adaptive, wincond, leak, elixir_adv)
+                    defense, adaptive, wincond, leak, elixir_adv,
+                    wincond_deploy)
     if deck == "random":
         return _env(DefaultStateMutator(), decision_ms, defense, adaptive,
-                    wincond, leak, elixir_adv)
+                    wincond, leak, elixir_adv, wincond_deploy)
     return _env(DefaultStateMutator(decks=[deck, deck]), decision_ms,
-                defense, adaptive, wincond, leak, elixir_adv)
+                defense, adaptive, wincond, leak, elixir_adv,
+                wincond_deploy)
