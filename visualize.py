@@ -256,7 +256,7 @@ def main():
             "frames -- try another --seed"
         )
     html = HTML.replace("__DATA__", json.dumps(data, separators=(",", ":")))
-    with open(args.out, "w") as fh:
+    with open(args.out, "w", encoding="utf-8") as fh:
         fh.write(html)
     import os
     print(f"wrote {os.path.abspath(args.out)}: {len(frames)} frames, {title} -- open that exact file in a browser")
